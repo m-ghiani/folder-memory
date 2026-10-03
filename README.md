@@ -1,4 +1,4 @@
-# advanced-memory
+# folder-memory
 
 A plugin for **Claude Code and Codex** that turns your project's memory files (`CLAUDE.md` / `AGENTS.md`) into a **lookup index over the codebase**.
 
