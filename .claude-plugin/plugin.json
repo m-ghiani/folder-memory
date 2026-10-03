@@ -3,7 +3,14 @@
   "version": "0.1.0",
   "description": "Per-directory CLAUDE.md project memory: auto-creates folder memory stubs on new directories and keeps a concise root directory index.",
   "author": {
-    "name": "Massimo Ghiani"
+    "name": "Massimo Ghiani",
+    "email": "m.ghiani@gmail.com",
+    "url": "https://github.com/m-ghiani/folder-memory"
+  },
+  "homepage": "https://github.com/m-ghiani/folder-memory",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/m-ghiani/folder-memory.git"
   },
   "license": "MIT",
   "keywords": ["memory", "claude-md", "hooks", "project-index"]
