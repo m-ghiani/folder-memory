@@ -254,6 +254,31 @@ npm run eval                # claude plugin eval: triggering + format, with/with
 
 The e2e phases run real `claude -p` sessions and use your Claude credentials.
 
+## 🚀 Quick Start / Installation
+
+Requirements: Claude Code or Codex CLI, and Node.js 18 or later.
+
+### 🤖 1. For Claude Code
+You can install `advanced-memory` directly from your terminal using the npm executor to clone and link the hooks automatically, or do it manually:
+
+```bash
+# Automated install via npx (creates stubs and sets up local hooks)
+npx folder-memory-installer init
+
+# Or manual installation
+git clone https://github.com advanced-memory
+claude --plugin-dir /path/to/advanced-memory
+```
+
+### 🧬 2. For Codex
+Since this repository natively implements the `.codex-plugin/plugin.json` and behaves as a one-plugin marketplace, you can install it instantly via the Codex CLI using the GitHub shorthand:
+
+```bash
+codex plugin marketplace add m-ghiani/folder-memory
+codex plugin add advanced-memory@folder-memory
+```
+*Codex will ask you to trust the plugin's hooks (`/hooks` in the TUI) upon the first execution.*
+
 ## License
 
 MIT © Massimo Ghiani
