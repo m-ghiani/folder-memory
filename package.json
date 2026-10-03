@@ -1,0 +1,15 @@
+{
+  "name": "advanced-memory",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "description": "Claude Code plugin: per-directory CLAUDE.md project memory",
+  "scripts": {
+    "test": "node --test tests/*.test.mjs",
+    "validate": "bash tests/e2e-claude.sh",
+    "eval": "claude plugin eval . --runs 1 --no-publish --allow-tools Write Edit"
+  },
+  "engines": {
+    "node": ">=18"
+  }
+}

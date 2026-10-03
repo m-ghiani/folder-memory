@@ -1,0 +1,31 @@
+# Dependencies
+node_modules/
+
+# claude plugin eval output
+evals/results/
+
+# advanced-memory runtime state (when the plugin runs on this repo)
+.claude/.dir-snapshot.json
+.claude/.dir-sync-nudge.json
+.claude/.dir-sync.lock
+.claude/*.tmp
+
+# Per-user Claude Code settings
+.claude/settings.local.json
+.claude/*.local.md
+
+# Logs and temp files
+*.log
+npm-debug.log*
+*.tmp
+
+# OS / editors
+.DS_Store
+Thumbs.db
+.vscode/
+.idea/
+*.swp
+
+#test folder
+test/
+

@@ -1,0 +1,10 @@
+{
+  "name": "advanced-memory",
+  "version": "0.1.0",
+  "description": "Per-directory CLAUDE.md project memory: auto-creates folder memory stubs on new directories and keeps a concise root directory index.",
+  "author": {
+    "name": "Massimo Ghiani"
+  },
+  "license": "MIT",
+  "keywords": ["memory", "claude-md", "hooks", "project-index"]
+}

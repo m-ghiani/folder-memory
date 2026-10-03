@@ -1,0 +1,39 @@
+{
+  "description": "advanced-memory: detect new directories, scaffold CLAUDE.md memory, remind Claude to fill/refresh it before finishing",
+  "hooks": {
+    "SessionStart": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "node \"${CLAUDE_PLUGIN_ROOT}/scripts/dir-sync.mjs\" --mode=session",
+            "timeout": 10
+          }
+        ]
+      }
+    ],
+    "PostToolUse": [
+      {
+        "matcher": "Bash|Write",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "node \"${CLAUDE_PLUGIN_ROOT}/scripts/dir-sync.mjs\" --mode=diff",
+            "timeout": 10
+          }
+        ]
+      }
+    ],
+    "Stop": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "node \"${CLAUDE_PLUGIN_ROOT}/scripts/dir-sync.mjs\" --mode=stop",
+            "timeout": 10
+          }
+        ]
+      }
+    ]
+  }
+}
