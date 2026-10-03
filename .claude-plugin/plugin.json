@@ -8,10 +8,12 @@
     "url": "https://github.com/m-ghiani/folder-memory"
   },
   "homepage": "https://github.com/m-ghiani/folder-memory",
-  "repository": {
-    "type": "git",
-    "url": "https://github.com/m-ghiani/folder-memory.git"
-  },
+  "repository": "https://github.com/m-ghiani/folder-memory",
   "license": "MIT",
-  "keywords": ["memory", "claude-md", "hooks", "project-index"]
+  "keywords": [
+    "memory",
+    "claude-md",
+    "hooks",
+    "project-index"
+  ]
 }

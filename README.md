@@ -1,6 +1,6 @@
 # advanced-memory
 
-A Claude Code plugin that turns your project's `CLAUDE.md` files into a **lookup index over the codebase**.
+A plugin for **Claude Code and Codex** that turns your project's memory files (`CLAUDE.md` / `AGENTS.md`) into a **lookup index over the codebase**.
 
 Instead of grepping and globbing the whole repository on every request, Claude walks a small, curated index:
 
@@ -93,14 +93,43 @@ Any other `CLAUDE.md` is considered hand-written and is never modified. Claude s
 
 ## Installation
 
-Requirements: Claude Code and Node.js 18 or later.
+Requirements: Claude Code or Codex CLI, and Node.js 18 or later.
 
-Clone the repository and load it as a plugin:
+### Claude Code
 
 ```bash
-git clone <repo-url> advanced-memory
+git clone https://github.com/m-ghiani/folder-memory.git advanced-memory
 claude --plugin-dir /path/to/advanced-memory
 ```
+
+### Codex
+
+The repository is also a Codex plugin (`.codex-plugin/plugin.json`) and a one-plugin marketplace (`.agents/plugins/marketplace.json`). The skill and the hooks are shared with Claude Code.
+
+```bash
+codex plugin marketplace add /path/to/advanced-memory   # or: m-ghiani/folder-memory
+codex plugin add advanced-memory@folder-memory
+```
+
+Codex asks you to trust the plugin's hooks the first time they run (`/hooks` in the TUI).
+
+Under Codex the plugin works the same way, with these differences:
+
+| | Claude Code | Codex |
+|---|---|---|
+| Memory file | `CLAUDE.md` | `AGENTS.md` (the file Codex loads on its own) |
+| State and settings | `.claude/` | `.codex/` |
+| Project root | `$CLAUDE_PROJECT_DIR` | nearest folder with `.git` above the session cwd |
+| `PostToolUse` | `Bash`, `Write` | `Bash`, `apply_patch` |
+
+The host is detected from the hook input (Codex adds `turn_id`); `--host=claude|codex` forces it.
+
+### Projects used with both agents
+
+By default each agent keeps its own file, so a project used with both would get `CLAUDE.md` and `AGENTS.md` side by side. Pick one with `memory_file` (same value in `.claude/` and `.codex/` settings, or one settings file: each agent also reads the other's):
+
+- `memory_file: AGENTS.md`, and put `@AGENTS.md` in the root `CLAUDE.md` so Claude Code loads the index; or
+- `memory_file: CLAUDE.md`, and set `project_doc_fallback_filenames = ["CLAUDE.md"]` in `~/.codex/config.toml` so Codex loads it (only where no `AGENTS.md` exists).
 
 ### First run on an existing project
 
@@ -154,7 +183,7 @@ Result: `src/notifications/CLAUDE.md` is created and filled, and the `notificati
 
 ## Configuration
 
-Optional, per project: `.claude/advanced-memory.local.md`. Only the YAML frontmatter is read; the body is free-form notes.
+Optional, per project: `.claude/advanced-memory.local.md` (Codex: `.codex/advanced-memory.local.md`; each host falls back to the other's file). Only the YAML frontmatter is read; the body is free-form notes.
 
 ```markdown
 ---
@@ -167,6 +196,7 @@ language: english         # language for memory content (default: the project's 
 max_lines: 40             # folder memory budget, in lines
 max_index_chars: 120      # root index line budget, in characters
 outdated_after_hours: 24  # SessionStart flags files modified this long after their memory
+memory_file: AGENTS.md    # memory filename (default: CLAUDE.md in Claude Code, AGENTS.md in Codex)
 ---
 ```
 
@@ -193,13 +223,17 @@ The index only helps if a request can be matched against it. The skill follows t
 
 - **Guidance, not enforcement.** The lookup protocol is an instruction Claude follows; no hook blocks repo-wide searches. In practice Claude follows it reliably when the index is filled.
 - **Content drift is detected heuristically.** Structural changes (files added or removed) are caught exactly. Edits inside a file are only flagged when the file is modified more than `outdated_after_hours` after its memory.
+- **Codex support is not covered by the e2e script.** Unit tests run the hook with Codex-shaped input; a live `codex exec` run is still to be added.
+- **`apply_patch` matcher.** If your Codex version reports file edits under another tool name, new folders created by a patch are picked up at the next shell command or at `Stop` instead of immediately.
 - **`claude plugin eval` can't test the lookup.** Its sandbox doesn't load project `CLAUDE.md` files, so lookup behavior is covered by the end-to-end script instead.
 
 ## Project layout
 
 ```
-.claude-plugin/plugin.json      plugin manifest
-hooks/hooks.json                SessionStart / PostToolUse / Stop wiring
+.claude-plugin/plugin.json      Claude Code plugin manifest
+.codex-plugin/plugin.json       Codex plugin manifest
+.agents/plugins/marketplace.json  Codex marketplace (this repo as one plugin)
+hooks/hooks.json                SessionStart / PostToolUse / Stop wiring (both hosts)
 scripts/dir-sync.mjs            structure sync, index maintenance, reminders
 skills/memory-indexer/SKILL.md  lookup protocol and memory-writing rules
 tests/dir-sync.test.mjs         unit tests (node:test)

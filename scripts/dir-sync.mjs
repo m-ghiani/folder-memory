@@ -19,8 +19,13 @@
 //   6. Stop blocks at most once per item per session, never when
 //      `stop_hook_active` is set.
 //
-// Per-project settings: `.claude/advanced-memory.local.md` (YAML frontmatter,
-// see README). CLI flags / env vars override the file.
+// Hosts: the same script runs under Claude Code and Codex. The host decides
+// the memory filename (CLAUDE.md / AGENTS.md: the file each agent loads on its
+// own) and the state dir (.claude / .codex). Detected from the hook stdin
+// (Codex adds `turn_id`), overridable with --host=claude|codex.
+//
+// Per-project settings: `<state dir>/advanced-memory.local.md` (YAML
+// frontmatter, see README). CLI flags / env vars override the file.
 
 import fs from "node:fs";
 import path from "node:path";
@@ -35,16 +40,27 @@ export const TODO_DESC = "_TODO: descrizione_";
 // Fixed line at the top of the root index: the root CLAUDE.md is always in
 // context, so this is what makes Claude use the memory as an index on every
 // request instead of scanning the tree.
-export const LOOKUP_RULE =
-  "**Lookup protocol (mandatory, before any Grep/Glob):** this index and each folder's `CLAUDE.md` map the codebase. " +
-  "Match the request to a folder below, `Read` its `CLAUDE.md`, follow **Sottocartelle** down, open only the files it names. " +
-  "Search with Grep/Glob only when the index has no match, scoped to the closest folder.";
+export const HOSTS = Object.freeze({
+  claude: Object.freeze({ memoryFile: "CLAUDE.md", stateDir: ".claude", read: "`Read`", search: "Grep/Glob" }),
+  codex: Object.freeze({ memoryFile: "AGENTS.md", stateDir: ".codex", read: "read", search: "rg/find" }),
+});
+/** Every name a folder memory can have: never counted as folder content. */
+const MEMORY_FILES = new Set(Object.values(HOSTS).map((h) => h.memoryFile));
+
+export function lookupRule(host = "claude", memoryFile = HOSTS[host].memoryFile) {
+  const { read, search } = HOSTS[host];
+  return (
+    `**Lookup protocol (mandatory, before any ${search}):** this index and each folder's \`${memoryFile}\` map the codebase. ` +
+    `Match the request to a folder below, ${read} its \`${memoryFile}\`, follow **Sottocartelle** down, open only the files it names. ` +
+    `Search with ${search} only when the index has no match, scoped to the closest folder.`
+  );
+}
+export const LOOKUP_RULE = lookupRule("claude");
 
 const IGNORED_NAMES = new Set([
   "node_modules", "dist", "build", "out", "target", "coverage",
   "__pycache__", "venv", "vendor", "tmp",
 ]);
-const STATE_DIR = ".claude";
 const CONFIG_FILE = "advanced-memory.local.md";
 const SNAPSHOT_FILE = ".dir-snapshot.json";
 const NUDGE_FILE = ".dir-sync-nudge.json";
@@ -54,6 +70,7 @@ const MTIME_SLACK_MS = 2_000;
 const MAX_DIRS = 5_000;
 const MAX_NAMES_PER_DIR = 5;
 const WRITE_TOOLS = new Set(["Write"]);
+const PATCH_TOOLS = /^(apply_?patch|ApplyPatch)$/i;
 const NO_FS_STRUCTURE_TOOLS = new Set(["Edit", "MultiEdit", "NotebookEdit", "Read", "Glob", "Grep"]);
 const HOUR_MS = 3_600_000;
 
@@ -65,6 +82,7 @@ export const DEFAULT_CONFIG = Object.freeze({
   max_lines: 40,
   max_index_chars: 120,
   outdated_after_hours: 24,
+  memory_file: "", // empty: the host's own file (CLAUDE.md / AGENTS.md)
 });
 
 // ---------- config ----------
@@ -107,12 +125,19 @@ export function parseFrontmatter(text) {
   return out;
 }
 
-/** Defaults overlaid with `.claude/advanced-memory.local.md`; bad values fall back. */
-export function loadConfig(root) {
+/**
+ * Defaults overlaid with `<state dir>/advanced-memory.local.md` (the host's
+ * dir first, then the other one); bad values fall back.
+ */
+export function loadConfig(root, host = "claude") {
   let raw = {};
-  try {
-    raw = parseFrontmatter(fs.readFileSync(path.join(root, STATE_DIR, CONFIG_FILE), "utf8"));
-  } catch {}
+  const dirs = [HOSTS[host].stateDir, ...Object.values(HOSTS).map((h) => h.stateDir)];
+  for (const dir of new Set(dirs)) {
+    try {
+      raw = parseFrontmatter(fs.readFileSync(path.join(root, dir, CONFIG_FILE), "utf8"));
+      break;
+    } catch {}
+  }
   const cfg = { ...DEFAULT_CONFIG };
   for (const [k, def] of Object.entries(DEFAULT_CONFIG)) {
     const v = raw[k];
@@ -120,6 +145,7 @@ export function loadConfig(root) {
     if (Array.isArray(def)) cfg[k] = (Array.isArray(v) ? v : [v]).map(String);
     else if (typeof def === typeof v && (typeof v !== "number" || v > 0)) cfg[k] = v;
   }
+  if (cfg.memory_file && !/^[\w.-]+\.md$/.test(cfg.memory_file)) cfg.memory_file = ""; // a bare filename only
   return cfg;
 }
 
@@ -212,10 +238,32 @@ function writeCreatesNoDir(root, filePath, snapshot, maxDepth, isIgnored) {
   return true;
 }
 
+/**
+ * Files an apply_patch call adds or moves to (`*** Add File:` / `*** Move to:`),
+ * or null when the tool input carries no patch.
+ */
+export function patchTargets(toolInput) {
+  const strings = [];
+  const collect = (v) => {
+    if (typeof v === "string") strings.push(v);
+    else if (Array.isArray(v)) v.forEach(collect);
+    else if (v && typeof v === "object") Object.values(v).forEach(collect);
+  };
+  collect(toolInput);
+  const patch = strings.find((x) => x.includes("*** Begin Patch"));
+  if (!patch) return null;
+  return [...patch.matchAll(/^\*\*\* (?:Add File|Move to): (.+)$/gm)].map((m) => m[1].trim());
+}
+
 // ---------- state ----------
 
+// Set once per run() from the host profile; module state keeps the many
+// small helpers' signatures unchanged.
+let stateDir = HOSTS.claude.stateDir;
+let memFile = HOSTS.claude.memoryFile;
+
 function statePath(root, name) {
-  return path.join(root, STATE_DIR, name);
+  return path.join(root, stateDir, name);
 }
 
 function readJson(file) {
@@ -254,11 +302,11 @@ function acquireLock(root) {
   }
 }
 
-// ---------- CLAUDE.md helpers ----------
+// ---------- memory file helpers ----------
 
 function readMemory(root, rel) {
   try {
-    return fs.readFileSync(path.join(root, rel, "CLAUDE.md"), "utf8");
+    return fs.readFileSync(path.join(root, rel, memFile), "utf8");
   } catch {
     return null;
   }
@@ -271,7 +319,7 @@ export function stubContent(rel) {
 /** Create stub CLAUDE.md if absent. Returns true if created. */
 function writeStub(root, rel) {
   try {
-    fs.writeFileSync(path.join(root, rel, "CLAUDE.md"), stubContent(rel), { flag: "wx" });
+    fs.writeFileSync(path.join(root, rel, memFile), stubContent(rel), { flag: "wx" });
     return true;
   } catch {
     return false; // exists or dir vanished: never overwrite
@@ -287,19 +335,19 @@ function fixMovedHeader(root, rel) {
   if (!text || !text.includes(MANAGED_MARKER)) return null;
   const m = text.match(/^# (.+)$/m);
   if (!m || m[1].trim() === rel) return null;
-  fs.writeFileSync(path.join(root, rel, "CLAUDE.md"), text.replace(/^# .+$/m, `# ${rel}`));
+  fs.writeFileSync(path.join(root, rel, memFile), text.replace(/^# .+$/m, `# ${rel}`));
   return m[1].trim();
 }
 
 /** Build index block, preserving descriptions (also across renames). */
-export function buildIndexBlock(existingBlock, topDirs, renames = {}) {
+export function buildIndexBlock(existingBlock, topDirs, renames = {}, rule = LOOKUP_RULE) {
   const known = new Map();
   for (const line of (existingBlock || "").split("\n")) {
     const m = line.match(/^- `([^`]+?)\/`: (.*)$/);
     if (m && m[2].trim() !== TODO_DESC) known.set(m[1], m[2].trim());
   }
   const lines = topDirs.map((d) => `- \`${d}/\`: ${known.get(d) || known.get(renames[d]) || TODO_DESC}`);
-  return [INDEX_START, "## Directory", LOOKUP_RULE, "", ...lines, INDEX_END].join("\n");
+  return [INDEX_START, "## Directory", rule, "", ...lines, INDEX_END].join("\n");
 }
 
 function readIndexBlock(text) {
@@ -308,9 +356,9 @@ function readIndexBlock(text) {
   return s !== -1 && e > s ? { s, e: e + INDEX_END.length, block: text.slice(s, e + INDEX_END.length) } : null;
 }
 
-/** Update the block between markers in root CLAUDE.md. Returns true if changed. */
-export function updateRootIndex(root, topDirs, renames = {}) {
-  const file = path.join(root, "CLAUDE.md");
+/** Update the block between markers in the root memory file. Returns true if changed. */
+export function updateRootIndex(root, topDirs, renames = {}, rule = LOOKUP_RULE) {
+  const file = path.join(root, memFile);
   let text = null;
   try {
     text = fs.readFileSync(file, "utf8");
@@ -318,12 +366,12 @@ export function updateRootIndex(root, topDirs, renames = {}) {
 
   let next;
   if (text === null) {
-    next = `# ${path.basename(root)}\n\n${buildIndexBlock("", topDirs)}\n`;
+    next = `# ${path.basename(root)}\n\n${buildIndexBlock("", topDirs, {}, rule)}\n`;
   } else {
     const idx = readIndexBlock(text);
     next = idx
-      ? text.slice(0, idx.s) + buildIndexBlock(idx.block, topDirs, renames) + text.slice(idx.e)
-      : `${text.replace(/\s*$/, "")}\n\n${buildIndexBlock("", topDirs)}\n`; // keep user content
+      ? text.slice(0, idx.s) + buildIndexBlock(idx.block, topDirs, renames, rule) + text.slice(idx.e)
+      : `${text.replace(/\s*$/, "")}\n\n${buildIndexBlock("", topDirs, {}, rule)}\n`; // keep user content
   }
   if (next === text) return false;
   fs.writeFileSync(file, next);
@@ -332,7 +380,7 @@ export function updateRootIndex(root, topDirs, renames = {}) {
 
 function rootTodos(root) {
   try {
-    const idx = readIndexBlock(fs.readFileSync(path.join(root, "CLAUDE.md"), "utf8"));
+    const idx = readIndexBlock(fs.readFileSync(path.join(root, memFile), "utf8"));
     if (!idx) return [];
     return [...idx.block.matchAll(/^- `([^`]+?)\/`: (.*)$/gm)]
       .filter((m) => m[2].trim() === TODO_DESC)
@@ -359,7 +407,7 @@ export function staleMemories(root, dirs, isIgnored = makeIgnore()) {
   const out = [];
   for (const d of dirs) {
     const abs = path.join(root, d);
-    const file = path.join(abs, "CLAUDE.md");
+    const file = path.join(abs, memFile);
     let memMtime;
     try {
       // Cheap prefilter: entries added/removed bump the dir's mtime.
@@ -376,7 +424,7 @@ export function staleMemories(root, dirs, isIgnored = makeIgnore()) {
     let entries;
     try {
       entries = fs.readdirSync(abs, { withFileTypes: true })
-        .filter((e) => e.name !== "CLAUDE.md" && !isIgnored(e.name, `${d}/${e.name}`));
+        .filter((e) => !MEMORY_FILES.has(e.name) && !isIgnored(e.name, `${d}/${e.name}`));
     } catch {
       continue;
     }
@@ -412,7 +460,7 @@ export function oversizedMemories(root, dirs, cfg = DEFAULT_CONFIG) {
     if (lines > cfg.max_lines) out.push({ dir: d, lines, max: cfg.max_lines });
   }
   try {
-    const idx = readIndexBlock(fs.readFileSync(path.join(root, "CLAUDE.md"), "utf8"));
+    const idx = readIndexBlock(fs.readFileSync(path.join(root, memFile), "utf8"));
     for (const m of idx ? idx.block.matchAll(/^- `([^`]+?)\/`: .*$/gm) : []) {
       if (m[0].length > cfg.max_index_chars) out.push({ index: m[1], chars: m[0].length, max: cfg.max_index_chars });
     }
@@ -431,7 +479,7 @@ export function outdatedMemories(root, dirs, cfg = DEFAULT_CONFIG, isIgnored = m
     const abs = path.join(root, d);
     let memMtime;
     try {
-      memMtime = fs.statSync(path.join(abs, "CLAUDE.md")).mtimeMs;
+      memMtime = fs.statSync(path.join(abs, memFile)).mtimeMs;
     } catch {
       continue;
     }
@@ -440,7 +488,7 @@ export function outdatedMemories(root, dirs, cfg = DEFAULT_CONFIG, isIgnored = m
     let files;
     try {
       files = fs.readdirSync(abs, { withFileTypes: true })
-        .filter((e) => e.isFile() && e.name !== "CLAUDE.md" && !isIgnored(e.name, `${d}/${e.name}`))
+        .filter((e) => e.isFile() && !MEMORY_FILES.has(e.name) && !isIgnored(e.name, `${d}/${e.name}`))
         .map((e) => ({ name: e.name, mtime: fs.statSync(path.join(abs, e.name)).mtimeMs }))
         .filter((f) => f.mtime > memMtime + threshold)
         .sort((a, b) => b.mtime - a.mtime);
@@ -458,7 +506,7 @@ export function outdatedMemories(root, dirs, cfg = DEFAULT_CONFIG, isIgnored = m
 // ---------- main logic ----------
 
 /** Snapshot diff + structural writes. Caller holds the lock. */
-function syncStructure(root, mode, maxDepth, snapshot, isIgnored) {
+function syncStructure(root, mode, maxDepth, snapshot, isIgnored, rule) {
   const current = scanDirs(root, maxDepth, isIgnored);
   // First run on an existing project: baseline only, no stubs for
   // pre-existing dirs (use --mode=backfill for that).
@@ -478,7 +526,7 @@ function syncStructure(root, mode, maxDepth, snapshot, isIgnored) {
     moved.filter((m) => !m.to.includes("/") && !m.from.includes("/")).map((m) => [m.to, m.from]),
   );
   const topDirs = current.filter((d) => !d.includes("/"));
-  const indexChanged = updateRootIndex(root, topDirs, renames);
+  const indexChanged = updateRootIndex(root, topDirs, renames, rule);
 
   writeJsonAtomic(statePath(root, SNAPSHOT_FILE), { version: 1, dirs: current }); // after writes
   return { current, newDirs, moved, indexChanged, baseline };
@@ -497,16 +545,33 @@ function unseenItems(root, sessionId, items) {
   return fresh;
 }
 
+/** "codex" when the hook stdin carries Codex-only fields, else "claude". */
+export function detectHost(input = {}) {
+  return typeof input.turn_id === "string" ? "codex" : "claude";
+}
+
+/** Nearest ancestor of `start` holding `.git` (the agents' project root), else `start`. */
+export function findProjectRoot(start) {
+  for (let dir = path.resolve(start); ; dir = path.dirname(dir)) {
+    if (fs.existsSync(path.join(dir, ".git"))) return dir;
+    if (dir === path.dirname(dir)) return path.resolve(start);
+  }
+}
+
 /**
- * @param {{root: string, mode: "diff"|"stop"|"session"|"backfill", maxDepth?: number, input?: object, config?: object}} opts
- *   maxDepth (CLI/env) overrides config.max_depth; config defaults to the project's settings file.
+ * @param {{root: string, mode: "diff"|"stop"|"session"|"backfill", maxDepth?: number, input?: object, config?: object, host?: "claude"|"codex"}} opts
+ *   maxDepth (CLI/env) overrides config.max_depth; config defaults to the project's settings file;
+ *   host defaults to the one detected from `input`.
  */
-export function run({ root, mode, maxDepth, input = {}, config }) {
+export function run({ root, mode, maxDepth, input = {}, config, host }) {
+  host = HOSTS[host] ? host : detectHost(input);
+  const cfg = { ...DEFAULT_CONFIG, ...(config ?? loadConfig(root, host)) };
+  stateDir = HOSTS[host].stateDir;
+  memFile = cfg.memory_file || HOSTS[host].memoryFile;
   const empty = {
     newDirs: [], moved: [], pending: [], todos: [], stale: [], oversized: [], outdated: [],
-    block: null, indexChanged: false, baseline: false, language: "",
+    block: null, indexChanged: false, baseline: false, language: "", host, memoryFile: memFile,
   };
-  const cfg = { ...DEFAULT_CONFIG, ...(config ?? loadConfig(root)) };
   if (!cfg.enabled) return { ...empty, skipped: "disabled" };
   maxDepth ??= cfg.max_depth;
   const isIgnored = makeIgnore(cfg.ignore);
@@ -515,20 +580,20 @@ export function run({ root, mode, maxDepth, input = {}, config }) {
   if (mode === "stop" && input.stop_hook_active) return { ...empty, skipped: "stop_hook_active" };
   if (mode === "diff" && NO_FS_STRUCTURE_TOOLS.has(input.tool_name)) return { ...empty, fastPath: true };
 
-  fs.mkdirSync(path.join(root, STATE_DIR), { recursive: true });
+  fs.mkdirSync(path.join(root, stateDir), { recursive: true });
   const snapshot = readSnapshot(root);
-  if (
-    mode === "diff" && snapshot && WRITE_TOOLS.has(input.tool_name) &&
-    writeCreatesNoDir(root, input.tool_input?.file_path, snapshot, maxDepth, isIgnored)
-  ) {
-    return { ...empty, fastPath: true };
+  if (mode === "diff" && snapshot) {
+    const noDir = (f) => writeCreatesNoDir(root, f, snapshot, maxDepth, isIgnored);
+    if (WRITE_TOOLS.has(input.tool_name) && noDir(input.tool_input?.file_path)) return { ...empty, fastPath: true };
+    const targets = PATCH_TOOLS.test(input.tool_name ?? "") ? patchTargets(input.tool_input) : null;
+    if (targets && targets.every(noDir)) return { ...empty, fastPath: true };
   }
 
   const lock = acquireLock(root);
   if (!lock) return { ...empty, skipped: "locked" };
 
   try {
-    const s = syncStructure(root, mode, maxDepth, snapshot, isIgnored);
+    const s = syncStructure(root, mode, maxDepth, snapshot, isIgnored, lookupRule(host, memFile));
     const result = { ...empty, ...s };
     delete result.current;
 
@@ -592,7 +657,7 @@ export function formatStop(result) {
     const what = long.map((o) => (o.dir ? `${o.dir} (${o.lines}/${o.max} lines)` : `index \`${o.index}/\` (${o.chars}/${o.max} chars)`));
     lines.push(`memory-indexer: too long → ${what.join(", ")}`);
   }
-  lines.push("Update these CLAUDE.md files following the memory-indexer skill, then finish.");
+  lines.push(`Update these ${result.memoryFile || "CLAUDE.md"} files following the memory-indexer skill, then finish.`);
   if (result.language) lines.push(`Write memory in ${result.language}.`);
   return { decision: "block", reason: lines.join("\n") };
 }
@@ -616,15 +681,18 @@ function main() {
   );
   const mode = ["diff", "stop", "session", "backfill"].includes(args.mode) ? args.mode : "diff";
   const input = readStdin();
+  const host = HOSTS[args.host] ? args.host : detectHost(input);
+  // Codex sets no project-dir variable and its cwd may be a subfolder.
   const root = path.resolve(
-    args.root || process.env.CLAUDE_PROJECT_DIR || input.cwd || process.cwd(),
+    args.root || (host === "claude" && process.env.CLAUDE_PROJECT_DIR) ||
+      findProjectRoot(input.cwd || process.cwd()),
   );
   const maxDepth = Number(args["max-depth"] || process.env.MEMORY_INDEXER_MAX_DEPTH) || undefined;
 
   // Never touch $HOME or filesystem root by accident.
   if (root === path.parse(root).root || root === process.env.HOME) return;
 
-  const result = run({ root, mode, maxDepth, input });
+  const result = run({ root, mode, maxDepth, input, host });
   const out = mode === "stop" ? formatStop(result) : mode === "session" ? formatContext(result, mode) : null;
   if (out) process.stdout.write(JSON.stringify(out));
   if (process.env.MEMORY_INDEXER_DEBUG) process.stderr.write(`${JSON.stringify(result)}\n`);

@@ -26,6 +26,11 @@ Thumbs.db
 .idea/
 *.swp
 
-#test folder
-test/
 
+
+# advanced-memory runtime state under Codex
+.codex/.dir-snapshot.json
+.codex/.dir-sync-nudge.json
+.codex/.dir-sync.lock
+.codex/*.tmp
+.codex/*.local.md

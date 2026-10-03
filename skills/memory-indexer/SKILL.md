@@ -1,11 +1,15 @@
 ---
 name: memory-indexer
-description: Uses per-directory CLAUDE.md files as a lookup index (root index → folder memory → file) so Claude opens only the files a request needs instead of scanning the repo, and fills/maintains that index. Use before searching the codebase for where something lives or which file to change, when context contains a "memory-indexer:" message (fill folder memory, stale folder memory, too long, pending stubs, root index TODO, possibly outdated), when a CLAUDE.md holds `<!-- memory-indexer:stub -->`, or when the user asks to update/rebuild the directory index, folder memory, "indice directory" or "memoria di cartella".
+description: Uses per-directory memory files (CLAUDE.md in Claude Code, AGENTS.md in Codex) as a lookup index (root index → folder memory → file) so the agent opens only the files a request needs instead of scanning the repo, and fills/maintains that index. Use before searching the codebase for where something lives or which file to change, when context contains a "memory-indexer:" message (fill folder memory, stale folder memory, too long, pending stubs, root index TODO, possibly outdated), when a CLAUDE.md or AGENTS.md holds `<!-- memory-indexer:stub -->`, or when the user asks to update/rebuild the directory index, folder memory, "indice directory" or "memoria di cartella".
 ---
 
 # Memory Indexer
 
-The `CLAUDE.md` files are an **index over the codebase**, like a database index over a table: the root lists folders, each folder memory lists files, and each entry says what it holds. Lookups walk the index; the index is only useful if its entries are written so a request can be matched against them.
+The memory files are an **index over the codebase**, like a database index over a table: the root lists folders, each folder memory lists files, and each entry says what it holds. Lookups walk the index; the index is only useful if its entries are written so a request can be matched against them.
+
+**Memory filename.** `CLAUDE.md` in Claude Code, `AGENTS.md` in Codex (or what the project set in `memory_file`). The root index's `Lookup protocol` line and the hook messages name the right one. Below, `CLAUDE.md` stands for it.
+
+**Tools in Codex.** `Read` → read the file from the shell (`sed -n`/`cat`); `Grep`/`Glob` → `rg`/`rg --files`/`find`; `Edit` → `apply_patch` with a minimal hunk; the "Stop hook" reminder arrives as a continuation message.
 
 ## Lookup (every request that touches code)
 

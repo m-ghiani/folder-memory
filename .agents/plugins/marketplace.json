@@ -1,0 +1,17 @@
+{
+  "name": "folder-memory",
+  "plugins": [
+    {
+      "name": "advanced-memory",
+      "source": {
+        "source": "local",
+        "path": "./"
+      },
+      "policy": {
+        "installation": "AVAILABLE",
+        "authentication": "ON_USE"
+      },
+      "category": "Engineering"
+    }
+  ]
+}

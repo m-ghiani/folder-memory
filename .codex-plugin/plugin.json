@@ -1,0 +1,27 @@
+{
+  "name": "advanced-memory",
+  "version": "0.1.0",
+  "description": "Per-directory AGENTS.md project memory: auto-creates folder memory stubs on new directories and keeps a concise root directory index that Codex uses to find files without scanning the repo.",
+  "author": {
+    "name": "Massimo Ghiani",
+    "email": "m.ghiani@gmail.com",
+    "url": "https://github.com/m-ghiani/folder-memory"
+  },
+  "homepage": "https://github.com/m-ghiani/folder-memory",
+  "repository": "https://github.com/m-ghiani/folder-memory",
+  "license": "MIT",
+  "keywords": ["memory", "agents-md", "hooks", "project-index"],
+  "skills": "./skills/",
+  "interface": {
+    "displayName": "Advanced Memory",
+    "shortDescription": "Folder memory as a lookup index over your codebase",
+    "longDescription": "Keeps one AGENTS.md per folder plus a root directory index. Hooks scaffold memory for new folders and remind Codex to fill or refresh it; the memory-indexer skill makes Codex walk the index instead of grepping the whole repository.",
+    "developerName": "Massimo Ghiani",
+    "category": "Engineering",
+    "capabilities": ["Read", "Write"],
+    "websiteURL": "https://github.com/m-ghiani/folder-memory",
+    "defaultPrompt": [
+      "Fill the pending folder memories and the root index TODOs"
+    ]
+  }
+}

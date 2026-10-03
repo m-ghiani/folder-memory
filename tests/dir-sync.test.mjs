@@ -22,6 +22,10 @@ import {
   LOOKUP_RULE,
   INDEX_END,
   TODO_DESC,
+  lookupRule,
+  detectHost,
+  findProjectRoot,
+  patchTargets,
 } from "../scripts/dir-sync.mjs";
 
 const SCRIPT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "../scripts/dir-sync.mjs");
@@ -616,5 +620,120 @@ describe("outdated memory (SessionStart)", () => {
     const old = new Date(Date.now() - 100 * 3_600_000);
     fs.utimesSync(p("lib", "CLAUDE.md"), old, old);
     assert.deepEqual(outdatedMemories(root, ["lib"], { outdated_after_hours: 1 }), []);
+  });
+});
+
+describe("Codex host", () => {
+  const codexInput = (extra = {}) => ({
+    hook_event_name: "PostToolUse", tool_name: "Bash", cwd: root,
+    session_id: "s1", turn_id: "t1", model: "gpt", ...extra,
+  });
+  /** Invoke the script like Codex does: no CLAUDE_PROJECT_DIR, turn_id in stdin. */
+  function codexHook(mode, stdin) {
+    const env = { ...process.env };
+    delete env.CLAUDE_PROJECT_DIR;
+    const res = spawnSync("node", [SCRIPT, `--mode=${mode}`], { input: JSON.stringify(stdin), env, encoding: "utf8" });
+    return { code: res.status, stdout: res.stdout };
+  }
+
+  test("detects the host from the stdin shape", () => {
+    assert.equal(detectHost(codexInput()), "codex");
+    assert.equal(detectHost({ tool_name: "Bash", session_id: "s" }), "claude");
+    assert.equal(detectHost(), "claude");
+  });
+
+  test("uses AGENTS.md and .codex/ state, never CLAUDE.md", () => {
+    run({ root, mode: "diff", input: codexInput() });
+    mkdir("api");
+    const r = run({ root, mode: "diff", input: codexInput() });
+    assert.equal(r.host, "codex");
+    assert.ok(read("api", "AGENTS.md").startsWith(STUB_MARKER));
+    assert.ok(read("AGENTS.md").includes(lookupRule("codex")));
+    assert.ok(read("AGENTS.md").includes("`api/`"));
+    assert.ok(exists(".codex", ".dir-snapshot.json"));
+    assert.ok(!exists("CLAUDE.md") && !exists("api", "CLAUDE.md") && !exists(".claude"));
+  });
+
+  test("codex lookup rule names AGENTS.md and shell search tools", () => {
+    const rule = lookupRule("codex");
+    assert.match(rule, /`AGENTS\.md`/);
+    assert.match(rule, /rg\/find/);
+    assert.doesNotMatch(rule, /CLAUDE\.md|Grep\/Glob/);
+  });
+
+  test("memory_file config overrides the host default", () => {
+    mkdir(".codex");
+    fs.writeFileSync(p(".codex", "advanced-memory.local.md"), "---\nmemory_file: CLAUDE.md\n---\n");
+    run({ root, mode: "diff", input: codexInput() });
+    mkdir("lib");
+    run({ root, mode: "diff", input: codexInput() });
+    assert.ok(exists("lib", "CLAUDE.md"));
+    assert.ok(!exists("lib", "AGENTS.md"));
+    assert.ok(read("CLAUDE.md").includes(lookupRule("codex", "CLAUDE.md")));
+  });
+
+  test("invalid memory_file falls back to the host default", () => {
+    mkdir(".codex");
+    fs.writeFileSync(p(".codex", "advanced-memory.local.md"), "---\nmemory_file: ../evil.md\n---\n");
+    assert.equal(loadConfig(root, "codex").memory_file, "");
+  });
+
+  test("Stop blocks with the AGENTS.md wording", () => {
+    run({ root, mode: "diff", input: codexInput() });
+    mkdir("svc");
+    const r = run({ root, mode: "stop", input: codexInput({ hook_event_name: "Stop", stop_hook_active: false }) });
+    const out = formatStop(r);
+    assert.equal(out.decision, "block");
+    assert.match(out.reason, /fill folder memory → svc/);
+    assert.match(out.reason, /Update these AGENTS\.md files/);
+  });
+
+  test("CLI: root resolved from a subfolder cwd via .git, exit 0", () => {
+    execFileSync("git", ["init", "-q"], { cwd: root });
+    mkdir("pkg/deep");
+    assert.equal(codexHook("session", codexInput({ hook_event_name: "SessionStart", cwd: p("pkg", "deep") })).code, 0);
+    mkdir("pkg/deep/new");
+    assert.equal(codexHook("diff", codexInput({ cwd: p("pkg", "deep") })).code, 0);
+    assert.ok(exists("pkg", "deep", "new", "AGENTS.md"));
+    assert.ok(exists("AGENTS.md"), "index at the git root, not in cwd");
+    assert.ok(!exists("pkg", "deep", ".codex"));
+  });
+
+  test("findProjectRoot: nearest .git ancestor, else the start dir", (t) => {
+    mkdir("a/b");
+    const outerGit = findProjectRoot(root) !== root; // tmpdir itself inside a repo
+    if (!outerGit) assert.equal(findProjectRoot(p("a", "b")), p("a", "b"));
+    execFileSync("git", ["init", "-q"], { cwd: p("a") });
+    assert.equal(findProjectRoot(p("a", "b")), p("a"));
+  });
+
+  test("patchTargets reads added and moved files from apply_patch input", () => {
+    const patch = "*** Begin Patch\n*** Add File: src/new/a.js\n+x\n*** Update File: b.js\n*** Move to: lib/c.js\n*** End Patch";
+    assert.deepEqual(patchTargets({ command: ["apply_patch", patch] }), ["src/new/a.js", "lib/c.js"]);
+    assert.deepEqual(patchTargets({ input: "*** Begin Patch\n*** Update File: b.js\n*** End Patch" }), []);
+    assert.equal(patchTargets({ command: "ls" }), null);
+  });
+
+  test("apply_patch fast path: known dirs skip the scan, new dirs do not", () => {
+    mkdir("src");
+    run({ root, mode: "diff", input: codexInput() });
+    const patch = (f) => ({ input: `*** Begin Patch\n*** Add File: ${f}\n+x\n*** End Patch` });
+    assert.equal(run({ root, mode: "diff", input: codexInput({ tool_name: "apply_patch", tool_input: patch("src/a.js") }) }).fastPath, true);
+    mkdir("src/feature");
+    const r = run({ root, mode: "diff", input: codexInput({ tool_name: "apply_patch", tool_input: patch("src/feature/a.js") }) });
+    assert.ok(!r.fastPath);
+    assert.deepEqual(r.newDirs, ["src/feature"]);
+  });
+
+  test("Claude memory files are not folder content under Codex", () => {
+    run({ root, mode: "diff", input: codexInput() });
+    mkdir("m");
+    fs.writeFileSync(p("m", "AGENTS.md"), `# m\n\n**Scopo**: x.\n\n${MANAGED_MARKER}\n`);
+    fs.writeFileSync(p("m", "CLAUDE.md"), "hand-written\n");
+    const past = new Date(Date.now() - 60_000);
+    fs.utimesSync(p("m", "AGENTS.md"), past, past);
+    run({ root, mode: "diff", input: codexInput() });
+    const stale = staleMemories(root, ["m"]);
+    assert.ok(!stale.some((s) => s.unlisted.includes("CLAUDE.md")));
   });
 });

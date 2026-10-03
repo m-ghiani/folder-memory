@@ -1,5 +1,5 @@
 {
-  "description": "advanced-memory: detect new directories, scaffold CLAUDE.md memory, remind Claude to fill/refresh it before finishing",
+  "description": "advanced-memory (Claude Code + Codex): detect new directories, scaffold folder memory (CLAUDE.md / AGENTS.md), remind the agent to fill/refresh it before finishing",
   "hooks": {
     "SessionStart": [
       {
@@ -14,7 +14,7 @@
     ],
     "PostToolUse": [
       {
-        "matcher": "Bash|Write",
+        "matcher": "Bash|Write|apply_patch",
         "hooks": [
           {
             "type": "command",
